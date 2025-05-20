@@ -1,178 +1,137 @@
-from graph_contruct import get_node_from_data
-from graph_embedding import get_answer
+from graph_construct import extract_vertices_from_files
+from graph_embedding import load_labels
 import os
-import time 
+import time
 from datetime import datetime
-import pdb
 
-data_dir = "/mnt/188b5285-b188-4759-81ac-763ab8cbc6bf/InsiderThreatData/"
-data_version = "r5.2"
-# data_version = "r_part"
+def convert_to_date(time_str):
+    """Convert a time string to a datetime object."""
+    time_struct = time.strptime(time_str, '%m/%d/%Y %H:%M:%S')
+    return datetime(time_struct[0], time_struct[1], time_struct[2])
 
-sorted_vertex_list = get_node_from_data(os.path.join(data_dir, data_version), all_http=False)
-
-# User第一次act的时间，用于计算timediff
-user_start_time_dict = {}
-
-# user上一次被采样的时间，用于采样
-user_last_time_dict = {}
-
-
-for node in sorted_vertex_list:
-    if user_start_time_dict.get(node['sub']) is None:
-        user_start_time_dict[node['sub']] = node['T']
-    node['timediff'] = node['T'] - user_start_time_dict[node['sub']]
-
-user_session_node = []
-session_node = []
-for node in sorted_vertex_list:
-    prev_user = None
-
-    # 理想情况下 logon开始 logoff结束    
-    # if node['sub'] not in user_session:
-    #     user_session[node['sub']] = []
-
-    # make session
-
-    if prev_user == None or prev_user == node['sub']:
-        session_node.append(node)
-        # session.append(node)
-
-        if node['A'] == 'Logoff':
-            user_session_node.append(session_node)
-            session_node = []
-    else:
-        user_session_node.append(session_node)
-        session_node = []
-
-    # Todo : 
-    # 1. logon开始，没有logoff结束，直接到下一个logon为止吧
-    # 2. 没有logon开始，有logoff结束
-
-label = get_answer(os.path.join(data_dir, "answers"), "r6.2" if "part" in data_version else data_version)
-
-
-
-def check_session(session, label):
-    label_number = [0] * 5
-    for node_id in session:
-        label_number[label.get(node_id['vertex_number'], 0)] += 1
-    if label_number[0] != len(session):
-        if label_number[2] != 0:
-            print(label_number)
-        return label_number.index(max(label_number[1:]))
-    return 0
-
-
-
-# 全量排序
-user_session_node = sorted(user_session_node, key = lambda x : (x[0].__getitem__('timediff')))
-# 排序后才能获取label，feat和label要对齐
-user_session_label = []
-user_session_label_count = {}
-user_session = []
-tmp = []
-
-for session in user_session_node:
-    la = check_session(session, label)
-    user_session_label.append(la)
-    for node in session:
-        tmp.append(node['vertex_number'])
-    user_session.append(tmp)
-    tmp = []
-    if la not in user_session_label_count:
-        user_session_label_count[la] = 0
-    user_session_label_count[la] += 1
-
-print("Session number")
-print(len(user_session))
-print(len(user_session_label))
-print(user_session_label_count)
-
-
-def trans_time_to_day(time0):
-    date0 = time.strptime(time0,'%m/%d/%Y %H:%M:%S')
-    date0 = datetime(date0[0], date0[1], date0[2])
-    return date0
-
-def cal_day_diff(time1, time2):
-    date1 = trans_time_to_day(time1)
-    date2 = trans_time_to_day(time2)
-    
+def calculate_day_difference(time_str1, time_str2):
+    """Calculate the number of days between two time strings."""
+    date1 = convert_to_date(time_str1)
+    date2 = convert_to_date(time_str2)
     return (date2 - date1).days
 
-# 进行采样
-sample_user_session_node = []
-min_diff = 15
+def process_sessions(vertices, labels, min_day_diff=15):
+    """Group vertices into user sessions, label them, and sample based on time differences."""
+    user_start_times = {}
+    user_last_times = {}
 
-print('start sample again!')
-for i, session in enumerate(user_session_node):
-    cur = session[0]['time']
-    user = session[0]['sub']
+    for vertex in vertices:
+        user = vertex['user']
+        if user not in user_start_times:
+            user_start_times[user] = vertex['timestamp']
+        vertex['time_diff'] = vertex['timestamp'] - user_start_times[user]
 
-    if user_last_time_dict.get(user) is None:
-        user_last_time_dict[user] = cur 
-        sample_user_session_node.append(session)
-    else:
-        pre = user_last_time_dict[user]
-        if (trans_time_to_day(pre) == trans_time_to_day(cur)) or (cal_day_diff(pre, cur) >= min_diff) or (user_session_label[i] != 0):
-            user_last_time_dict[user] = cur 
-            sample_user_session_node.append(session)
+    sessions = []
+    current_session = []
+    prev_user = None
 
-                 
-# 采样排序        
-sample_user_session_node = sorted(sample_user_session_node, key = lambda x : (x[0].__getitem__('timediff')))
+    print("Grouping vertices into sessions...")
+    for vertex in vertices:
+        user = vertex['user']
+        if prev_user is None or prev_user == user:
+            current_session.append(vertex)
+            if vertex['activity'] == 'Logoff':
+                sessions.append(current_session)
+                current_session = []
+        else:
+            sessions.append(current_session)
+            current_session = [vertex]
+        prev_user = user
 
-# 特别注意这里要排序后再获取label
-sample_user_label = []
-sample_user_session = []
+    if current_session:
+        sessions.append(current_session)
 
-sample_session_label_count = {}
-tmp = []
+    # TODO: Handle sessions without logon/logoff boundaries
+    # 1. Sessions starting with logon but no logoff: end at next logon
+    # 2. Sessions with logoff but no logon: adjust boundaries
 
-for session in sample_user_session_node:
-    la = check_session(session, label)
-    sample_user_label.append(la)
-    for node in session:
-        tmp.append(node['vertex_number'])
-    sample_user_session.append(tmp)
-    tmp = []
-    if la not in sample_session_label_count:
-        sample_session_label_count[la] = 0
-    sample_session_label_count[la] += 1
+    sessions = sorted(sessions, key=lambda s: s[0]['time_diff'])
 
+    session_labels = []
+    session_node_ids = []
+    label_counts = {}
 
-print('Sample number: ', len(sample_user_session))
-print('Sample Label number: ', len(sample_user_label))
-print('sample label count: \n', sample_session_label_count)
+    print("Labeling sessions...")
+    for session in sessions:
+        label_counts_session = [0] * 5
+        for node in session:
+            label = labels.get(node['id'], 0)
+            label_counts_session[label] += 1
+        if label_counts_session[0] != len(session):
+            if label_counts_session[2] != 0:
+                print(f"Label counts: {label_counts_session}")
+            label = label_counts_session[1:].index(max(label_counts_session[1:])) + 1
+        else:
+            label = 0
+        session_labels.append(label)
+        session_node_ids.append([node['id'] for node in session])
+        label_counts[label] = label_counts.get(label, 0) + 1
 
+    print(f"Total sessions: {len(session_node_ids)}")
+    print(f"Label counts: {label_counts}")
 
+    sampled_sessions = []
+    sampled_labels = []
+    sampled_node_ids = []
+    sampled_label_counts = {}
 
+    print("Sampling sessions...")
+    for i, session in enumerate(sessions):
+        current_time = session[0]['time_str']
+        user = session[0]['user']
+        if user not in user_last_times:
+            user_last_times[user] = current_time
+            sampled_sessions.append(session)
+            sampled_labels.append(session_labels[i])
+            sampled_node_ids.append(session_node_ids[i])
+        else:
+            previous_time = user_last_times[user]
+            same_day = convert_to_date(previous_time) == convert_to_date(current_time)
+            day_diff = calculate_day_difference(previous_time, current_time)
+            if same_day or day_diff >= min_day_diff or session_labels[i] != 0:
+                user_last_times[user] = current_time
+                sampled_sessions.append(session)
+                sampled_labels.append(session_labels[i])
+                sampled_node_ids.append(session_node_ids[i])
 
+    sampled_sessions = sorted(sampled_sessions, key=lambda s: s[0]['time_diff'])
 
+    sampled_label_counts = {}
+    for label in sampled_labels:
+        sampled_label_counts[label] = sampled_label_counts.get(label, 0) + 1
 
+    print(f"Sampled sessions: {len(sampled_node_ids)}")
+    print(f"Sampled label counts: {sampled_label_counts}")
 
-ourput_data_dir = "./output/%s/session_data/"%(data_version)
-if not os.path.exists(ourput_data_dir):
-    os.makedirs(ourput_data_dir)
+    return sampled_node_ids, sampled_labels
 
-print("Start to save sample session")
-with open(ourput_data_dir + "sample_session_15", 'w') as file:
-    for session in sample_user_session:
-        file.write('\t'.join(session) + '\n')
+def save_sessions_and_labels(node_ids, labels, output_dir):
+    """Save sampled sessions and labels to files."""
+    os.makedirs(output_dir, exist_ok=True)
+    session_file = os.path.join(output_dir, "sample_session_15")
+    label_file = os.path.join(output_dir, "sample_session_label_15")
 
-print('Start to save sample label')
-with open(ourput_data_dir + "sample_session_label_15", 'w') as file:
-    for session_label in sample_user_label:
-        file.write(str(session_label) + '\n')
+    print("Saving sampled sessions...")
+    with open(session_file, 'w') as file:
+        for session in node_ids:
+            file.write('\t'.join(session) + '\n')
 
-# print("Start to save session and label")
-# with open(ourput_data_dir + "user_session", 'w') as file:
-#     for session in user_session:
-#         file.write('\t'.join(session) + '\n')
+    print("Saving sampled labels...")
+    with open(label_file, 'w') as file:
+        for label in labels:
+            file.write(f"{label}\n")
 
-# with open(ourput_data_dir + "user_session_label", 'w') as file:
-#     for session_label in user_session_label:
-#         file.write(str(session_label) + '\n')
+if __name__ == '__main__':
+    data_dir = "/mnt/188b5285-b188-4759-81ac-763ab8cbc6bf/InsiderThreatData/"
+    data_version = "r5.2"
+    output_dir = os.path.join("./output", data_version, "session_data")
 
-
+    vertices = extract_vertices_from_files(os.path.join(data_dir, data_version))
+    labels = load_labels(os.path.join(data_dir, "answers"), data_version)
+    sampled_node_ids, sampled_labels = process_sessions(vertices, labels)
+    save_sessions_and_labels(sampled_node_ids, sampled_labels, output_dir)
