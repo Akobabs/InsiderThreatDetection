@@ -3,6 +3,12 @@ bin-debug/
 bin-release/
 [Oo]bj/
 [Bb]in/
+venv/
+*.pyc
+*.pytest
+*.pyo
+*.pyd
+*.egg-info/
 
 # Other files and folders
 .settings/
