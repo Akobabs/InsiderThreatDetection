@@ -9,6 +9,8 @@ venv/
 *.pyo
 *.pyd
 *.egg-info/
+__init__.py
+__pycache__/
 
 # Other files and folders
 .settings/
